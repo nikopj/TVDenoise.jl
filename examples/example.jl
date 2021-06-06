@@ -1,5 +1,8 @@
 using TVDenoise
 using Plots, Printf, TestImages, FileIO
+#=
+Example TV denoising!
+=#
 
 # generate noisy image
 img = testimage("fabio_color_256")
@@ -13,7 +16,7 @@ y = I + 0.1*randn(size(I))
 kw = Dict(:maxit=>500, :tol=>1e-3, :verbose=>false)
 
 # PSNR for peakvalue of 1
-PSNR(x) = -10log10(mse(x,I))
+PSNR(x) = -10log10(sum(abs2.(x-I))/length(I))
 
 # sparse-array TVD
 @time x1, hist1 = tvd(y, λ, ρ; kw...)

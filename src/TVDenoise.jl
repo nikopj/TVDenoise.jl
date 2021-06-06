@@ -5,37 +5,7 @@ matrix direct solves and FFT solves
 =#
 include("utils.jl")
 export tvd, tvd_fft, img2tensor, tensor2img
-
-using Printf, SparseArrays, LinearAlgebra, FFTW, NNlib
-
-HT(x,τ) = x*(abs(x) > τ);           # hard-thresholding
-ST(x,τ) = sign(x)*max(abs(x)-τ, 0); # soft-thresholding
-
-"""
-    FDmat(M,[N,[C]])::SparseMatrixCSC
-
-Return First order Derivative matrix for 1D/2D/3D matrix.
-2D is anisotropic. 3D is concatenation of 2D in channel dimension.
-"""
-function FDmat(N::Int)::SparseMatrixCSC
-	spdiagm(0=>-1*ones(N), 1=>ones(N))[1:N-1,1:N]; 
-end
-
-function FDmat(M::Int, N::Int)::SparseMatrixCSC
-	# vertical derivative
-	S = spdiagm(N-1, N, ones(N-1));
-	T = FDmat(M);
-	Dy = kron(S,T);
-	# horizontal derivative
-	S = FDmat(N);
-	T = spdiagm(M-1, M, ones(M-1));
-	Dx = kron(S,T);
-	return [Dx; Dy];
-end
-
-function FDmat(M::Int, N::Int, C::Int)::SparseMatrixCSC
-	kron(I(C),FDmat(M,N))
-end
+using Printf, LinearAlgebra, FFTW, NNlib
 
 """
     tvd(y, args...; kw...)
