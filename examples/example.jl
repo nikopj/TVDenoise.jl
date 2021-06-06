@@ -11,9 +11,10 @@ y = I + 0.1*randn(size(I))
 @info size(y)
 
 # TVD parameters
-λ = 0.08
+λ = 0.1
 ρ = 2
-kw = Dict(:maxit=>500, :tol=>1e-3, :verbose=>false)
+kw = Dict(:isotropic=>true, :maxit=>200, :tol=>1e-2, :verbose=>true)
+@info kw[:isotropic]
 
 # PSNR for peakvalue of 1
 PSNR(x) = -10log10(sum(abs2.(x-I))/length(I))
@@ -39,6 +40,7 @@ for i=1:length(P)
 	title!(P[i], @sprintf "%s: %.2f dB" titlev[i] psnrv[i])
 end
 
-#savefig("exfabio.png")
-gui()
+iso = kw[:isotropic] ? "_iso" : "" # Julia has the ternary operator
+#savefig("exfabio$iso.png")
+gui() # show plot
 

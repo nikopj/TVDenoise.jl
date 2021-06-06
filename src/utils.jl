@@ -1,7 +1,8 @@
 using Images, NNlib, SparseArrays
 
-HT(x,τ) = x*(abs(x) > τ);           # hard-thresholding
-ST(x,τ) = sign(x)*max(abs(x)-τ, 0); # soft-thresholding
+HT(x,τ) = x*(abs(x) > τ);                # hard-thresholding
+ST(x,τ) = sign.(x).*max.(abs.(x).-τ, 0); # soft-thresholding
+BT(x,τ) = max.(1 .- τ./sqrt.(sum(abs2, x, dims=(3,4))), 0).*x # block-thresholding
 
 function tensor2img(A::Array{<:Real,2})
 	tensor2img(Gray, A)

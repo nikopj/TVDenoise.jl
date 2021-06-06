@@ -4,7 +4,7 @@ Implementation of Total Variation denoising via two ADMM based methods: sparse
 matrix direct solves and FFT solves 
 =#
 include("utils.jl")
-export tvd, tvd_fft, img2tensor, tensor2img
+export tvd, tvd_fft, isotvd_fft, img2tensor, tensor2img
 using Printf, LinearAlgebra, FFTW, NNlib
 
 """
@@ -26,25 +26,34 @@ the first two dimensions of y.  itfun is an optional function to be called each
 iterations with the solution x and iteration number k.
 """
 function tvd(y::Array{<:Real,N}, λ, ρ=1;
+             isotropic  = false,
              maxit      = 100,
              tol        = 1e-2,
              verbose    = true,
 	         itfun      = (x,k) -> 0) where {N}
 	sz = size(y);
 	D = FDmat(sz...);
-	x, hist = tvd(vec(y), D, λ, ρ, maxit, tol, verbose, itfun);
+	x, hist = tvd(vec(y), D, λ, ρ, isotropic, maxit, tol, verbose, itfun);
 	return reshape(x, sz...), hist
 end
 
-function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, maxit::Int, tol, verbose::Bool, itfun::Function)
+function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, isotropic::Bool, maxit::Int, tol, verbose::Bool, itfun::Function)
 	M, N = size(D);
-	objfun(x,Dx) = 0.5*sum((x-y).^2) + λ*norm(Dx, 1);
 	x = copy(y); 
 	z = zeros(M);
 	u = zeros(M);
 	F = zeros(maxit); # objective fun, 
 	r = zeros(maxit); # primal residual
 	s = zeros(maxit); # dual residual
+	τ = λ/ρ
+
+	if isotropic
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))));
+		T = BT # block-thresholding
+	else
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+		T = ST # soft-thresholding
+	end
 
 	C = cholesky(I + ρ*D'*D);
 
@@ -53,7 +62,7 @@ function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, maxit::Int, tol, verb
 		x = C\(y + ρ*D'*(z - u));
 		Dx = D*x; 
 		zᵏ = z;
-		z = ST.(Dx + u, λ/ρ);
+		z = T(Dx + u, τ);
 		u = u + Dx - z;       # dual ascent
 		r[k+1] = norm(Dx - z);
 		s[k+1] = ρ*norm(D'*(z - zᵏ));
@@ -96,7 +105,7 @@ end
 Accepts 2D, 3D, 4D tensors in (H,W,C,B) form, where the last two
 dimensions are optional.
 """
-function tvd_fft(y::Array{<:Real,4}, λ, ρ=1; maxit=100, tol=1e-2, verbose=true) 
+function tvd_fft(y::Array{<:Real,4}, λ, ρ=1; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
 	M, N, P = size(y)[1:3]
 	# move channels to batch dimension
 	y = permutedims(y, (1,2,4,3))
@@ -112,7 +121,14 @@ function tvd_fft(y::Array{<:Real,4}, λ, ρ=1; maxit=100, tol=1e-2, verbose=true
 	Q  = plan_rfft(y,(1,2)); 
 	Qᴴ = plan_irfft(rfft(y),M,(1,2));
 
-	objfun(x,Dx) = 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+	# conditional function definition requires anonymous functions 
+	if isotropic
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))));
+		T = BT # block-thresholding
+	else
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+		T = ST # soft-thresholding
+	end
 
 	# initialization
 	x = zeros(M,N,1,P);
@@ -140,7 +156,7 @@ function tvd_fft(y::Array{<:Real,4}, λ, ρ=1; maxit=100, tol=1e-2, verbose=true
 		x = Qᴴ*(C.*(Q*( y + ρ*Dᵀ!(x,z-u) ))); # x update
 		Dxᵏ = D!(Dxᵏ,x);
 		zᵏ  = z;
-		z = ST.(Dxᵏ+u, τ);                 # z update
+		z = T(Dxᵏ+u, τ);                   # z update
 		u = u + Dxᵏ - z;                   # dual ascent
 		r[k+1] = norm(Dxᵏ-z);
 		s[k+1] = norm(z-zᵏ);
