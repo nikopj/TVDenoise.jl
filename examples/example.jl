@@ -11,9 +11,8 @@ y = I + 0.1*randn(size(I))
 @info size(y)
 
 # TVD parameters
-λ = 0.1
-ρ = 2
-kw = Dict(:isotropic=>true, :maxit=>200, :tol=>1e-2, :verbose=>true)
+λ = 0.4; ρ = 2; γ1 = 0.5; γ2 = 0.5
+kw = Dict(:isotropic=>true, :maxit=>200, :tol=>1e-15, :verbose=>true)
 @info kw[:isotropic]
 
 # PSNR for peakvalue of 1
@@ -29,11 +28,16 @@ psnr1 = PSNR(x1)
 psnr2 = PSNR(x2)
 @printf "k=%d, PSNR2 = %.2f\n" hist2.k psnr2
 
+# Primal-Dual Splitting TVD
+@time x3, hist3 = tvd_pds(y, λ, γ1, γ2; kw...)
+psnr3 = PSNR(x3)
+@printf "k=%d, PSNR3 = %.2f\n" hist3.k psnr3
+
 # showing images side-by-side
-P = plot(axis=nothing, layout=(1,3), size=(1200,400))
-imgv = tensor2img.([y, x1, x2])
-psnrv  = [PSNR(y), psnr1, psnr2]
-titlev = ["Noisy", "Sparse", "FFT"]
+P = plot(axis=nothing, layout=(1,4), size=(1600,400))
+imgv = tensor2img.([y, x1, x2, x3])
+psnrv  = [PSNR(y), psnr1, psnr2, psnr3]
+titlev = ["Noisy", "Sparse", "FFT", "PDS"]
 
 for i=1:length(P)
 	plot!(P[i], imgv[i])

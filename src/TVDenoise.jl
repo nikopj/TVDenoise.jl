@@ -4,7 +4,7 @@ Implementation of Total Variation denoising via two ADMM based methods: sparse
 matrix direct solves and FFT solves 
 =#
 include("utils.jl")
-export tvd, tvd_fft, isotvd_fft, img2tensor, tensor2img
+export tvd, tvd_fft, tvd_pds, img2tensor, tensor2img
 using Printf, LinearAlgebra, FFTW, NNlib
 
 """
@@ -168,6 +168,78 @@ function tvd_fft(y::Array{<:Real,4}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 	end
 	x = permutedims(x, (1,2,4,3));
 	return x, (k=k, obj=F[1:k], pres=r[1:k], dres=s[1:k])
+end
+
+"""
+    tvd_fft(y, args...; kw...)
+
+tvd_fft with ability to pass in image types (ex. typeof(y) = Matrix{RGB{N0f8},2}).
+"""
+function tvd_pds(y, args...; kw...)
+	xt, hist = tvd_pds(img2tensor(y), args...; kw...)
+	return tensor2img(xt), hist
+end
+
+function tvd_pds(y::Array{<:Real,2}, args...; kw...) 
+	y = reshape(y, size(y)...,1,1)
+	x, hist = tvd_pds(y, args...; kw...)
+	return x[:,:], hist
+end
+
+function tvd_pds(y::Array{<:Real,3}, args...; kw...) 
+	y = reshape(y, size(y)...,1)
+	x, hist = tvd_pds(y, args...; kw...)
+	return x[:,:,:], hist
+end
+
+function tvd_pds(y::Array{<:Real,4}, λ, γ1, γ2; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
+	M, N, P = size(y)[1:3]
+	# move channels to batch dimension
+	y = permutedims(y, (1,2,4,3))
+
+	# conditional function definition requires anonymous functions 
+	if isotropic
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))));
+		T = BT # block-thresholding
+	else
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+		T = ST # soft-thresholding
+	end
+
+	# initialization
+	x = zeros(M,N,1,P);
+	z = zeros(M,N,2,P);
+	u = zeros(M,N,2,P);
+	F = zeros(maxit); # store objective fun
+	r = zeros(maxit); # store primal residual
+
+	# conv kernel
+	W = zeros(Float64, 2,2,1,2);
+	W[:,:,1,1] = [1 -1; 0 0];          # dx
+	W[:,:,1,2] = [1  0;-1 0];          # dy
+	Wᵀ = reverse(permutedims(W, (2,1,4,3)), dims=:);
+	
+	D(x) = conv(pad_circular(x, (1,0,1,0)), W);
+	Dᵀ(z)= conv(pad_circular(z, (0,1,0,1)), Wᵀ);
+
+	Y = norm(y)
+
+	k = 0;
+	while k == 0 || k < maxit && r[k] > tol 
+		xᵏ= x
+		x = 0.5*(x - γ1*Dᵀ(z) + y)
+		u = z + γ2*D(2x - xᵏ)
+		z = u - T(u,λ)
+		Dx = D(x)
+		r[k+1] = norm(x - xᵏ)/Y;
+		F[k+1] = objfun(x,Dx);
+		k += 1;
+		if verbose
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k] ;
+		end
+	end
+	x = permutedims(x, (1,2,4,3));
+	return x, (k=k, obj=F[1:k], pres=r[1:k])
 end
 
 end # module
