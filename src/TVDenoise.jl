@@ -87,15 +87,9 @@ function tvd_fft(y, args...; kw...)
 end
 
 function tvd_fft(y::Array{<:Real,2}, args...; kw...) 
-	y = reshape(y, size(y)...,1,1)
-	x, hist = tvd_fft(y, args...; kw...)
-	return x[:,:], hist
-end
-
-function tvd_fft(y::Array{<:Real,3}, args...; kw...) 
 	y = reshape(y, size(y)...,1)
 	x, hist = tvd_fft(y, args...; kw...)
-	return x[:,:,:], hist
+	return x[:,:], hist
 end
 
 """
@@ -105,10 +99,10 @@ end
 Accepts 2D, 3D, 4D tensors in (H,W,C,B) form, where the last two
 dimensions are optional.
 """
-function tvd_fft(y::Array{<:Real,4}, λ, ρ=1; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
-	M, N, P = size(y)[1:3]
-	# move channels to batch dimension
-	y = permutedims(y, (1,2,4,3))
+function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
+	M, N, P = size(y)
+	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
+	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
 	τ = λ/ρ;
 
 	# precompute C for x-update
@@ -171,9 +165,9 @@ function tvd_fft(y::Array{<:Real,4}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 end
 
 """
-    tvd_fft(y, args...; kw...)
+    tvd_pds(y, λ, γ1, γ2; kw...)
 
-tvd_fft with ability to pass in image types (ex. typeof(y) = Matrix{RGB{N0f8},2}).
+TV Denoising via Primal-Dual splitting. Lagrange multiplier λ and two step sizes (γ1, γ2) required.
 """
 function tvd_pds(y, args...; kw...)
 	xt, hist = tvd_pds(img2tensor(y), args...; kw...)
@@ -186,16 +180,10 @@ function tvd_pds(y::Array{<:Real,2}, args...; kw...)
 	return x[:,:], hist
 end
 
-function tvd_pds(y::Array{<:Real,3}, args...; kw...) 
-	y = reshape(y, size(y)...,1)
-	x, hist = tvd_pds(y, args...; kw...)
-	return x[:,:,:], hist
-end
-
-function tvd_pds(y::Array{<:Real,4}, λ, γ1, γ2; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
-	M, N, P = size(y)[1:3]
-	# move channels to batch dimension
-	y = permutedims(y, (1,2,4,3))
+function tvd_pds(y::Array{<:Real,3}, λ, γ1, γ2; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
+	M, N, P = size(y)
+	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
+	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
 
 	# conditional function definition requires anonymous functions 
 	if isotropic
@@ -222,7 +210,7 @@ function tvd_pds(y::Array{<:Real,4}, λ, γ1, γ2; isotropic=false, maxit=100, t
 	D(x) = conv(pad_circular(x, (1,0,1,0)), W);
 	Dᵀ(z)= conv(pad_circular(z, (0,1,0,1)), Wᵀ);
 
-	Y = norm(y)
+	Y = norm(y) # form normalizing the residual
 
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol 
@@ -239,7 +227,58 @@ function tvd_pds(y::Array{<:Real,4}, λ, γ1, γ2; isotropic=false, maxit=100, t
 		end
 	end
 	x = permutedims(x, (1,2,4,3));
-	return x, (k=k, obj=F[1:k], pres=r[1:k])
+	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k])
+end
+
+function tvd_pds(y::Array{<:Real,4}, λ, γ1, γ2; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
+	K, M, N, P = size(y)
+	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
+	y = permutedims(y, (1,2,3,5,4)) # move channels to batch dimension
+
+	# conditional function definition requires anonymous functions 
+	if isotropic
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(4,5))));
+		T = BT # block-thresholding
+	else
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+		T = ST # soft-thresholding
+	end
+
+	# initialization
+	x = zeros(K,M,N,1,P);
+	z = zeros(K-1,M-1,N-1,3,P);
+	u = zeros(K-1,M-1,N-1,3,P);
+	F = zeros(maxit); # store objective fun
+	r = zeros(maxit); # store primal residual
+
+	# conv kernel
+	W = zeros(Float64, 2,2,2,1,3);
+	W[1,1,:,1,1] = [1 -1]           # dx
+	W[1,:,1,1,2] = [1 -1]           # dy
+	W[:,1,1,1,3] = [1 -1]           # dt
+	Wᵀ = reverse(permutedims(W, (1,3,2,5,4)), dims=:);
+	
+	D(x) = conv(x, W);
+	Dᵀ(z)= conv(z, Wᵀ, pad=(0,2,0,2,0,2));
+
+	Y = norm(y) # form normalizing the residual
+
+	k = 0;
+	while k == 0 || k < maxit && r[k] > tol 
+		xᵏ= x
+		x = 0.5*(x - γ1*Dᵀ(z) + y)
+		u = z + γ2*D(2x - xᵏ)
+		z = u - T(u,λ)
+		Dx = D(x)
+		r[k+1] = norm(x - xᵏ)/Y;
+		F[k+1] = objfun(x,Dx);
+		k += 1;
+		if verbose
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k] ;
+		end
+	end
+	x = permutedims(x, (1,2,4,3));
+	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k])
 end
 
 end # module
