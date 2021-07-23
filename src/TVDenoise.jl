@@ -101,7 +101,7 @@ dimensions are optional.
 """
 function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
 	M, N, P = size(y)
-	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
+	y = reshape(y,size(y)...,1)   # unsqueeze for NNlib conv
 	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
 	τ = λ/ρ;
 
@@ -161,13 +161,16 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 		end
 	end
 	x = permutedims(x, (1,2,4,3));
-	return x, (k=k, obj=F[1:k], pres=r[1:k], dres=s[1:k])
+	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k], dres=s[1:k])
 end
 
 """
     tvd_pds(y, λ, γ1, γ2; kw...)
 
-TV Denoising via Primal-Dual splitting. Lagrange multiplier λ and two step sizes (γ1, γ2) required.
+TV Denoising via Primal-Dual splitting, also known as Chambolle-Pock Algorithm,
+Primal Dual Hybrid Gradient, or (in this case, θ=0) the Arrow Hurwitz Uzawa
+Algorithm. Lagrange multiplier λ required. Step-sizes set to maximum
+internally.
 """
 function tvd_pds(y, args...; kw...)
 	xt, hist = tvd_pds(img2tensor(y), args...; kw...)
@@ -175,30 +178,28 @@ function tvd_pds(y, args...; kw...)
 end
 
 function tvd_pds(y::Array{<:Real,2}, args...; kw...) 
-	y = reshape(y, size(y)...,1,1)
+	y = reshape(y, size(y)...,1)
 	x, hist = tvd_pds(y, args...; kw...)
 	return x[:,:], hist
 end
 
-function tvd_pds(y::Array{<:Real,3}, λ, γ1, γ2; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
+function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
 	M, N, P = size(y)
 	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
 	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
 
-	# conditional function definition requires anonymous functions 
-	if isotropic
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))));
-		T = BT # block-thresholding
-	else
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
-		T = ST # soft-thresholding
-	end
+	objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+
+	L = sqrt(8) # Spectral norm of D
+	τ = 0.95 / L
+	σ = 0.95 / L
 
 	# initialization
 	x = zeros(M,N,1,P);
 	z = zeros(M,N,2,P);
 	u = zeros(M,N,2,P);
 	F = zeros(maxit); # store objective fun
+	G = zeros(maxit); # store primal-dual gap
 	r = zeros(maxit); # store primal residual
 
 	# conv kernel
@@ -210,71 +211,17 @@ function tvd_pds(y::Array{<:Real,3}, λ, γ1, γ2; isotropic=false, maxit=100, t
 	D(x) = conv(pad_circular(x, (1,0,1,0)), W);
 	Dᵀ(z)= conv(pad_circular(z, (0,1,0,1)), Wᵀ);
 
-	Y = norm(y) # form normalizing the residual
-
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol 
-		xᵏ= x
-		x = 0.5*(x - γ1*Dᵀ(z) + y)
-		u = z + γ2*D(2x - xᵏ)
-		z = u - T(u,λ)
+		xᵏ= x; x = x - τ*(x - y + Dᵀ(z)) # Gradient Descent on x (primal)
+		#x = 2x - xᵏ;                    # Extrapolation (not necessary for smooth data term)
 		Dx = D(x)
-		r[k+1] = norm(x - xᵏ)/Y;
+		z = clamp.(z + σ*Dx, -λ, λ)      # Proximal Gradient Ascent on z (dual)
+		r[k+1] = norm(x - xᵏ)/norm(x);
 		F[k+1] = objfun(x,Dx);
 		k += 1;
 		if verbose
-			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k] ;
-		end
-	end
-	x = permutedims(x, (1,2,4,3));
-	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k])
-end
-
-function tvd_pds(y::Array{<:Real,4}, λ, γ1, γ2; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
-	K, M, N, P = size(y)
-	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
-	y = permutedims(y, (1,2,3,5,4)) # move channels to batch dimension
-
-	# conditional function definition requires anonymous functions 
-	if isotropic
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(4,5))));
-		T = BT # block-thresholding
-	else
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
-		T = ST # soft-thresholding
-	end
-
-	# initialization
-	x = zeros(K,M,N,1,P);
-	z = zeros(K-1,M-1,N-1,3,P);
-	u = zeros(K-1,M-1,N-1,3,P);
-	F = zeros(maxit); # store objective fun
-	r = zeros(maxit); # store primal residual
-
-	# conv kernel
-	W = zeros(Float64, 2,2,2,1,3);
-	W[1,1,:,1,1] = [1 -1]           # dx
-	W[1,:,1,1,2] = [1 -1]           # dy
-	W[:,1,1,1,3] = [1 -1]           # dt
-	Wᵀ = reverse(permutedims(W, (1,3,2,5,4)), dims=:);
-	
-	D(x) = conv(x, W);
-	Dᵀ(z)= conv(z, Wᵀ, pad=(0,2,0,2,0,2));
-
-	Y = norm(y) # form normalizing the residual
-
-	k = 0;
-	while k == 0 || k < maxit && r[k] > tol 
-		xᵏ= x
-		x = 0.5*(x - γ1*Dᵀ(z) + y)
-		u = z + γ2*D(2x - xᵏ)
-		z = u - T(u,λ)
-		Dx = D(x)
-		r[k+1] = norm(x - xᵏ)/Y;
-		F[k+1] = objfun(x,Dx);
-		k += 1;
-		if verbose
-			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k] ;
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k]
 		end
 	end
 	x = permutedims(x, (1,2,4,3));
