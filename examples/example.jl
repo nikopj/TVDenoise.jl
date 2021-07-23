@@ -5,14 +5,14 @@ Example TV denoising!
 =#
 
 # generate noisy image
-img = testimage("fabio_color_512")
+img = testimage("fabio_gray_256")
 I = img2tensor(img)
 y = I + 0.1*randn(size(I))
 @info size(y)
 
 # TVD parameters
-λ = 0.08; ρ = 2
-kw = Dict(:isotropic=>false, :maxit=>50, :tol=>1e-3, :verbose=>true)
+λ = 0.12; ρ = 2
+kw = Dict(:isotropic=>true, :maxit=>25, :tol=>1e-5, :verbose=>false)
 @info kw[:isotropic]
 
 # PSNR for peakvalue of 1

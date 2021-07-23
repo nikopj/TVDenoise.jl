@@ -18,26 +18,24 @@ function tvd(y, args...; kw...)
 end
 
 """
-    tvd(y::Array{<:Real,N}, λ, ρ; maxit=100, tol=1e-2, verbose=true, itfun=(x,k)->0)
+    tvd(y::Array{<:Real,N}, λ, ρ; maxit=100, tol=1e-2, verbose=true)
 
 TV denoising via ADMM with sparse matrix solves (cholesky). If y is a vector,
 1D TVD is performed.  If y is 2D or 3D, 2D anisotropic TV denoising is done on
-the first two dimensions of y.  itfun is an optional function to be called each
-iterations with the solution x and iteration number k.
+the first two dimensions of y.  
 """
 function tvd(y::Array{<:Real,N}, λ, ρ=1;
              isotropic  = false,
              maxit      = 100,
              tol        = 1e-2,
-             verbose    = true,
-	         itfun      = (x,k) -> 0) where {N}
+             verbose    = true) where {N}
 	sz = size(y);
 	D = FDmat(sz...);
-	x, hist = tvd(vec(y), D, λ, ρ, isotropic, maxit, tol, verbose, itfun);
+	x, hist = tvd(vec(y), D, λ, ρ, isotropic, maxit, tol, verbose);
 	return reshape(x, sz...), hist
 end
 
-function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, isotropic::Bool, maxit::Int, tol, verbose::Bool, itfun::Function)
+function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, isotropic::Bool, maxit::Int, tol, verbose::Bool)
 	M, N = size(D);
 	x = copy(y); 
 	z = zeros(M);
@@ -57,7 +55,7 @@ function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, isotropic::Bool, maxi
 
 	C = cholesky(I + ρ*D'*D);
 
-	k = 0; itfun(x,0);
+	k = 0
 	while k == 0 || k < maxit && r[k] > tol 
 		x = C\(y + ρ*D'*(z - u));
 		Dx = D*x; 
@@ -66,12 +64,11 @@ function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, isotropic::Bool, maxi
 		u = u + Dx - z;       # dual ascent
 		r[k+1] = norm(Dx - z);
 		s[k+1] = ρ*norm(D'*(z - zᵏ));
-		F[k+1] = objfun(x,Dx);
-		k += 1;
 		if verbose
-			@printf "k: %3d | F= %.3e | r= %.3e | s= %.3e \n" k F[k] r[k] s[k] ;
+			F[k+1] = objfun(x,Dx);
+			@printf "k: %3d | F= %.3e | r= %.3e | s= %.3e \n" k+1 F[k+1] r[k+1] s[k+1] ;
 		end
-		itfun(x,k);
+		k += 1;
 	end
 	return x, (k=k, obj=F[1:k], pres=r[1:k], dres=s[1:k])
 end
@@ -154,11 +151,11 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 		u = u + Dxᵏ - z;                   # dual ascent
 		r[k+1] = norm(Dxᵏ-z);
 		s[k+1] = norm(z-zᵏ);
-		F[k+1] = objfun(x,Dxᵏ);
-		k += 1;
 		if verbose
-			@printf "k: %3d | F= %.3e | r= %.3e | s= %.3e \n" k F[k] r[k] s[k];
+			F[k+1] = objfun(x,Dxᵏ);
+			@printf "k: %3d | F= %.3e | r= %.3e | s= %.3e \n" k+1 F[k+1] r[k+1] s[k+1];
 		end
+		k += 1;
 	end
 	x = permutedims(x, (1,2,4,3));
 	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k], dres=s[1:k])
@@ -188,11 +185,20 @@ function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, v
 	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
 	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
 
-	objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+	# conditional function definition requires anonymous functions 
+	if isotropic
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))))
+		# pixel-vector projection onto λ-2-norm ball
+		Π = z -> z ./ max.(1,sqrt.(sum(abs2, z, dims=(3,4)))/λ)
+	else
+		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1)
+		# coeff projection onto λ-inf-norm ball
+		Π = z -> clamp.(z, -λ, λ) 
+	end
 
 	L = sqrt(8) # Spectral norm of D
-	τ = 0.95 / L
-	σ = 0.95 / L
+	τ = 0.99 / L
+	σ = 0.99 / L
 
 	# initialization
 	x = zeros(M,N,1,P);
@@ -216,13 +222,13 @@ function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, v
 		xᵏ= x; x = x - τ*(x - y + Dᵀ(z)) # Gradient Descent on x (primal)
 		#x = 2x - xᵏ;                    # Extrapolation (not necessary for smooth data term)
 		Dx = D(x)
-		z = clamp.(z + σ*Dx, -λ, λ)      # Proximal Gradient Ascent on z (dual)
+		z = Π(z + σ*Dx)                  # Proximal Gradient Ascent on z (dual)
 		r[k+1] = norm(x - xᵏ)/norm(x);
-		F[k+1] = objfun(x,Dx);
-		k += 1;
 		if verbose
-			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k]
+			F[k+1] = objfun(x,Dx);
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k+1 F[k+1] r[k+1]
 		end
+		k += 1;
 	end
 	x = permutedims(x, (1,2,4,3));
 	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k])
