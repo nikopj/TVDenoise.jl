@@ -1,8 +1,12 @@
 using Images, NNlib, SparseArrays
 
-HT(x,τ) = x*(abs(x) > τ);                # hard-thresholding
-ST(x,τ) = sign.(x).*max.(abs.(x).-τ, 0); # soft-thresholding
-BT(x,τ) = max.(1 .- τ./sqrt.(sum(abs2, x, dims=(3,4))), 0).*x # block-thresholding
+HT(x,τ) = x*(abs(x) > τ);                        # hard-thresholding
+ST(x,τ) = sign.(x).*max.(abs.(x).-τ, 0);         # soft-thresholding
+pixelnorm = x -> sqrt.(sum(abs2, x, dims=(3,4))) # 2-norm on 4D image-tensor pixel-vectors
+BT(x,τ) = max.(1 .- τ ./ pixelnorm(x), 0).*x     # block-thresholding
+
+objfun_iso   = (x,Dx,y,λ) -> 0.5*sum(abs2.(x-y)) + λ*norm(pixelnorm(Dx), 1) 
+objfun_aniso = (x,Dx,y,λ) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1)
 
 function tensor2img(A::Array{<:Real,2})
 	tensor2img(Gray, A)

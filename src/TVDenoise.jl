@@ -41,15 +41,14 @@ function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, isotropic::Bool, maxi
 	z = zeros(M);
 	u = zeros(M);
 	F = zeros(maxit); # objective fun, 
-	r = zeros(maxit); # primal residual
-	s = zeros(maxit); # dual residual
+	r = zeros(maxit); # store normalized residual
 	τ = λ/ρ
 
 	if isotropic
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))));
+		objfun = (x,Dx) -> objfun_iso(x,Dx,y,λ)
 		T = BT # block-thresholding
 	else
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+		objfun = (x,Dx) -> objfun_aniso(x,Dx,y,λ)
 		T = ST # soft-thresholding
 	end
 
@@ -57,20 +56,20 @@ function tvd(y::AbstractVector, D::AbstractMatrix, λ, ρ, isotropic::Bool, maxi
 
 	k = 0
 	while k == 0 || k < maxit && r[k] > tol 
-		x = C\(y + ρ*D'*(z - u));
+		xᵏ= x
+		x = C\(y + ρ*D'*(z - u));      # x-update
 		Dx = D*x; 
 		zᵏ = z;
-		z = T(Dx + u, τ);
-		u = u + Dx - z;       # dual ascent
-		r[k+1] = norm(Dx - z);
-		s[k+1] = ρ*norm(D'*(z - zᵏ));
-		if verbose
-			F[k+1] = objfun(x,Dx);
-			@printf "k: %3d | F= %.3e | r= %.3e | s= %.3e \n" k+1 F[k+1] r[k+1] s[k+1] ;
-		end
+		z = T(Dx + u, τ);              # z-update
+		u = u + Dx - z;                # dual ascent
+		r[k+1] = norm(x - xᵏ)/norm(x);
+		F[k+1] = objfun(x,Dx);
 		k += 1;
+		if verbose
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k]
+		end
 	end
-	return x, (k=k, obj=F[1:k], pres=r[1:k], dres=s[1:k])
+	return x, (k=k, obj=F[1:k], res=r[1:k])
 end
 
 """
@@ -112,12 +111,11 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 	Q  = plan_rfft(y,(1,2)); 
 	Qᴴ = plan_irfft(rfft(y),M,(1,2));
 
-	# conditional function definition requires anonymous functions 
 	if isotropic
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))));
+		objfun = (x,Dx) -> objfun_iso(x,Dx,y,λ)
 		T = BT # block-thresholding
 	else
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1);
+		objfun = (x,Dx) -> objfun_aniso(x,Dx,y,λ)
 		T = ST # soft-thresholding
 	end
 
@@ -127,8 +125,7 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 	z = zeros(M,N,2,P);
 	u = zeros(M,N,2,P);
 	F = zeros(maxit); # store objective fun
-	r = zeros(maxit); # store primal residual
-	s = zeros(maxit); # store dual   residual
+	r = zeros(maxit); # store (relative) primal residual
 
 	# conv kernel
 	W = zeros(Float64, 2,2,1,2);
@@ -143,22 +140,22 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 	Dᵀ!(x,z)= conv!(x, pad_circular(z, (0,1,0,1)), Wᵀ,cdimsᵀ);
 
 	k = 0;
-	while k == 0 || k < maxit && r[k] > tol && s[k] > tol
+	while k == 0 || k < maxit && r[k] > tol
+		xᵏ= x
 		x = Qᴴ*(C.*(Q*( y + ρ*Dᵀ!(x,z-u) ))); # x update
 		Dxᵏ = D!(Dxᵏ,x);
 		zᵏ  = z;
-		z = T(Dxᵏ+u, τ);                   # z update
-		u = u + Dxᵏ - z;                   # dual ascent
-		r[k+1] = norm(Dxᵏ-z);
-		s[k+1] = norm(z-zᵏ);
-		if verbose
-			F[k+1] = objfun(x,Dxᵏ);
-			@printf "k: %3d | F= %.3e | r= %.3e | s= %.3e \n" k+1 F[k+1] r[k+1] s[k+1];
-		end
+		z = T(Dxᵏ+u, τ);              # z update
+		u = u + Dxᵏ - z;              # dual ascent
+		r[k+1] = norm(x - xᵏ)/norm(x);
+		F[k+1] = objfun(x,Dxᵏ);
 		k += 1;
+		if verbose
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k];
+		end
 	end
 	x = permutedims(x, (1,2,4,3));
-	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k], dres=s[1:k])
+	return x[:,:,:], (k=k, obj=F[1:k], res=r[1:k])
 end
 
 """
@@ -185,17 +182,18 @@ function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, v
 	y = reshape(y, size(y)...,1)  # unsqueeze for NNlib conv
 	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
 
-	# conditional function definition requires anonymous functions 
 	if isotropic
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*sum(sqrt.(sum(abs2, Dx, dims=(3,4))))
+		objfun = (x,Dx) -> objfun_iso(x,Dx,y,λ)
 		# pixel-vector projection onto λ-2-norm ball
-		Π = z -> z ./ max.(1,sqrt.(sum(abs2, z, dims=(3,4)))/λ)
+		Π = z -> z ./ max.(1,pixelnorm(z)/λ)
 	else
-		objfun = (x,Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1)
+		objfun = (x,Dx) -> objfun_aniso(x,Dx,y,λ)
 		# coeff projection onto λ-inf-norm ball
 		Π = z -> clamp.(z, -λ, λ) 
 	end
 
+	# set step-sizes at maximum: τσL² < 1
+	# note: PDS seems sensitive to these (given finite iterations at least...)
 	L = sqrt(8) # Spectral norm of D
 	τ = 0.99 / L
 	σ = 0.99 / L
@@ -203,7 +201,6 @@ function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, v
 	# initialization
 	x = zeros(M,N,1,P);
 	z = zeros(M,N,2,P);
-	u = zeros(M,N,2,P);
 	F = zeros(maxit); # store objective fun
 	G = zeros(maxit); # store primal-dual gap
 	r = zeros(maxit); # store primal residual
@@ -214,8 +211,8 @@ function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, v
 	W[:,:,1,2] = [1  0;-1 0];          # dy
 	Wᵀ = reverse(permutedims(W, (2,1,4,3)), dims=:);
 	
-	D(x) = conv(pad_circular(x, (1,0,1,0)), W);
-	Dᵀ(z)= conv(pad_circular(z, (0,1,0,1)), Wᵀ);
+	D(x) = conv(pad_constant(x, (1,0,1,0), dims=(1,2)), W);
+	Dᵀ(z)= conv(pad_constant(z, (0,1,0,1), dims=(1,2)), Wᵀ);
 
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol 
@@ -224,14 +221,14 @@ function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, v
 		Dx = D(x)
 		z = Π(z + σ*Dx)                  # Proximal Gradient Ascent on z (dual)
 		r[k+1] = norm(x - xᵏ)/norm(x);
-		if verbose
-			F[k+1] = objfun(x,Dx);
-			@printf "k: %3d | F= %.3e | r= %.3e \n" k+1 F[k+1] r[k+1]
-		end
+		F[k+1] = objfun(x,Dx);
 		k += 1;
+		if verbose
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k]
+		end
 	end
 	x = permutedims(x, (1,2,4,3));
-	return x[:,:,:], (k=k, obj=F[1:k], pres=r[1:k])
+	return x[:,:,:], (k=k, obj=F[1:k], res=r[1:k])
 end
 
 end # module
