@@ -231,5 +231,59 @@ function tvd_pds(y::Array{<:Real,3}, λ; isotropic=false, maxit=100, tol=1e-2, v
 	return x[:,:,:], (k=k, obj=F[1:k], res=r[1:k])
 end
 
+function flow(I::Array{<:Real,4}, λ; maxit=100, tol=1e-2, verbose=true) 
+	M, N, C, B = size(I)
+	@assert B==2 "Must provide two input images!"
+
+	# conv kernel
+	W = zeros(Float64, 2,2,1,2);
+	W[:,:,1,1] = [1 -1; 0 0];          # dx
+	W[:,:,1,2] = [1  0;-1 0];          # dy
+	Wᵀ = reverse(permutedims(W, (2,1,4,3)), dims=:);
+	
+	D = (r,v) -> conv(pad_constant(v, (1,0,1,0), dims=(1,2)), repeat(W,  outer=(1,1,r,r)))
+	Dᵀ= (r,w) -> conv(pad_constant(w, (0,1,0,1), dims=(1,2)), repeat(Wᵀ, outer=(1,1,r,r)))
+	
+	I = permutedims(I, (1,2,4,3)) # swap channels and batch dimension
+	Iₜ = I[:,:,2] - I[:,:,1]      # time derivative
+	∇I = D(1,I[:,:,1:1,:])          # space derivative
+
+	pixeldot = (a,b) -> sum(a.*b, dims=(3,4))
+	objfun = (v,Dv) -> 0.5*sum(pixeldot(∇I,v)+Iₜ) + λ*norm(pixelnorm(Dv),1)
+
+	α = pixelnorm(∇I).^2
+	proxf = (v,ρ) -> v + ∇I.*( ST(ρ, τ*α) - ρ )./α
+	Π = w -> w ./ max.(1,pixelnorm(w)/λ)
+
+	# set step-sizes at maximum: τσL² < 1
+	# note: PDS seems sensitive to these (given finite iterations at least...)
+	L = sqrt(8) # Spectral norm of D
+	τ = 0.99 / L
+	σ = 0.99 / L
+
+	# initialization
+	v = zeros(M,N,2,C);
+	w = zeros(M,N,4,C);
+	F = zeros(maxit); # store objective fun
+	r = zeros(maxit); # store primal residual
+
+	k = 0;
+	while k == 0 || k < maxit && r[k] > tol 
+		vᵏ= v; ρ = pixeldot(∇I,v) .+ Iₜ
+		v = proxf(v - τ*Dᵀ(2,w), ρ)                 # Proximal Gradient Descent on x (primal)
+		v = 2v - vᵏ;                    # Extrapolation 
+		Dv = D(2,v)
+		w = Π(w + σ*Dv)                 # Proximal Gradient Ascent on z (dual)
+		r[k+1] = norm(v - vᵏ)/norm(v);
+		F[k+1] = objfun(v,Dv);
+		k += 1;
+		if verbose
+			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k]
+		end
+	end
+	v = permutedims(v, (1,2,4,3));
+	return v[:,:,:], (k=k, obj=F[1:k], res=r[1:k])
+end
+
 end # module
 
