@@ -1,12 +1,12 @@
-using Images, NNlib, SparseArrays
+using Images, NNlib, SparseArrays, Random
 
-HT(x,τ) = x*(abs(x) > τ);                        # hard-thresholding
-ST(x,τ) = sign.(x).*max.(abs.(x).-τ, 0);         # soft-thresholding
-pixelnorm = x -> sqrt.(sum(abs2, x, dims=(3,4))) # 2-norm on 4D image-tensor pixel-vectors
-BT(x,τ) = max.(1 .- τ ./ pixelnorm(x), 0).*x     # block-thresholding
+HT(x,τ) = x*(abs(x) > τ);                      # hard-thresholding
+ST(x,τ) = sign.(x).*max.(abs.(x).-τ, 0);       # soft-thresholding
+pixelnorm(x) = sqrt.(sum(abs2, x, dims=(3,4))) # 2-norm on 4D image-tensor pixel-vectors
+BT(x,τ) = max.(1 .- τ ./ pixelnorm(x), 0).*x   # block-thresholding
 
-objfun_iso   = (x,Dx,y,λ) -> 0.5*sum(abs2.(x-y)) + λ*norm(pixelnorm(Dx), 1) 
-objfun_aniso = (x,Dx,y,λ) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1)
+objfun_iso(x,Dx,y,λ)   = 0.5*sum(abs2.(x-y)) + λ*norm(pixelnorm(Dx), 1) 
+objfun_aniso(x,Dx,y,λ) = 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1)
 
 function tensor2img(A::Array{<:Real,2})
 	tensor2img(Gray, A)
@@ -22,36 +22,36 @@ end
 
 function img2tensor(A)
 	B = Float64.(reinterpret(reshape, N0f8, A) |> collect)
-	if size(B) |> length == 3
+	if ndims(B) == 3
 		B = permutedims(B, (2,3,1))
 	end
 	return B
 end
 
 """
-    FDmat(M,[N,[C]])::SparseMatrixCSC
+    fdmat(M,[N,[C]])::SparseMatrixCSC
 
 Return First order Derivative matrix for 1D/2D/3D matrix.
 2D is anisotropic. 3D is concatenation of 2D in channel dimension.
 """
-function FDmat(N::Int)::SparseMatrixCSC
+function fdmat(N::Int)::SparseMatrixCSC
 	spdiagm(0=>-1*ones(N), 1=>ones(N))[1:N-1,1:N]; 
 end
 
-function FDmat(M::Int, N::Int)::SparseMatrixCSC
+function fdmat(M::Int, N::Int)::SparseMatrixCSC
 	# vertical derivative
 	S = spdiagm(N-1, N, ones(N-1));
-	T = FDmat(M);
+	T = fdmat(M);
 	Dy = kron(S,T);
 	# horizontal derivative
-	S = FDmat(N);
+	S = fdmat(N);
 	T = spdiagm(M-1, M, ones(M-1));
 	Dx = kron(S,T);
 	return [Dx; Dy];
 end
 
-function FDmat(M::Int, N::Int, C::Int)::SparseMatrixCSC
-	kron(I(C),FDmat(M,N))
+function fdmat(M::Int, N::Int, C::Int)::SparseMatrixCSC
+	kron(I(C),fdmat(M,N))
 end
 
 """
@@ -106,4 +106,37 @@ function pad_circular(A::Array{<:Number,4}, pad::NTuple{4,Int})
 	B[f(b,M+t+b), f(r,N+l+r), :, :] = A[1:b, 1:r, :, :]
 	return B
 end
+
+"""
+    fdkernel(T::Type)
+
+Return 2D forward difference convolution kernels (analysis and synthesis) for
+use with NNlib's conv.
+"""
+function fdkernel(T::Type)
+	W = zeros(T, 2,2,1,2)
+	W[:,:,1,1] = [1 -1; 0 0]; 
+	W[:,:,1,2] = [1  0;-1 0]; 
+	Wᵀ = reverse(permutedims(W, (2,1,4,3)), dims=:);
+	return W, Wᵀ
+end
+
+"""
+    saltpepper!(x, p=0.5)
+
+Add salt and pepper noise to array x with probability p.  Salt and pepper come
+in equal proportions.
+"""
+function saltpepper!(x::Array{T,M}, p=0.5) where {T<:Real,M}
+	N = length(x)
+	ω = rand(eltype(x), N) .< p
+	Ω = shuffle(1:N)[ω]
+	m = length(Ω)
+	Ωₛ, Ωₚ = Ω[1:m÷2], Ω[m÷2+1:end]
+	x[Ωₛ] .= one(T)
+	x[Ωₚ] .= zero(T)
+	return x
+end
+
+saltpepper(x, p) = saltpepper!(copy(x), p)
 

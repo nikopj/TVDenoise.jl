@@ -29,7 +29,7 @@ psnr2 = PSNR(x2)
 @printf "k=%d, PSNR2 = %.2f\n" hist2.k psnr2
 
 # Primal-Dual Splitting TVD
-@time x3, hist3 = tvd_pds(y, λ; kw...)
+@time x3, hist3 = tvd_pds(y, λ; θ=1, kw...)
 psnr3 = PSNR(x3)
 @printf "k=%d, PSNR3 = %.2f\n" hist3.k psnr3
 
