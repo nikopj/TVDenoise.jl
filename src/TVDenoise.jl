@@ -131,10 +131,10 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 	W, Wᵀ = fdkernel(eltype(y))
 
 	# (in-place) Circular convolution
-	cdims = DenseConvDims(pad_circular(x, (0,1,0,1)), W);
-	cdimsᵀ= DenseConvDims(pad_circular(z, (1,0,1,0)), Wᵀ);
-	D!(z,x) = conv!(z, pad_circular(x, (0,1,0,1)), W, cdims);
-	Dᵀ!(x,z)= conv!(x, pad_circular(z, (1,0,1,0)), Wᵀ,cdimsᵀ);
+	cdims = DenseConvDims(pad_circular(x, (1,0,1,0)), W);
+	cdimsᵀ= DenseConvDims(pad_circular(z, (0,1,0,1)), Wᵀ);
+	D!(z,x) = conv!(z, pad_circular(x, (1,0,1,0)), W, cdims);
+	Dᵀ!(x,z)= conv!(x, pad_circular(z, (0,1,0,1)), Wᵀ,cdimsᵀ);
 
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol
@@ -222,8 +222,8 @@ function tvd_pds(y::Array{<:Real,3}, λ; ℓ1=false, θ=0, isotropic=false, maxi
 
 	# conv kernel
 	W, Wᵀ = fdkernel(eltype(y))
-	D(x) = conv(pad_constant(x, (0,1,0,1), dims=(1,2)), W);
-	Dᵀ(z)= conv(pad_constant(z, (1,0,1,0), dims=(1,2)), Wᵀ);
+	D(x) = conv(pad_constant(x, (1,0,1,0), dims=(1,2)), W);
+	Dᵀ(z)= conv(pad_constant(z, (0,1,0,1), dims=(1,2)), Wᵀ);
 
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol 

@@ -12,14 +12,14 @@ y = saltpepper(x, 0.1)
 
 # TVD parameters
 λ = 1
-kw = Dict(:isotropic=>true, :maxit=>500, :tol=>5e-3, :verbose=>true)
+kw = Dict(:ℓ1=>true, :θ=>0, :isotropic=>true, :maxit=>500, :tol=>1e-2, :verbose=>true)
 @info kw[:isotropic]
 
 # PSNR for peakvalue of 1
 PSNR(x̂) = -10log10(sum(abs2, x-x̂)/length(x))
 
 # Primal-Dual Splitting TVD
-@time x̂, hist = tvd_pds(y, λ; θ=0, ℓ1=true, kw...)
+@time x̂, hist = tvd_pds(y, λ; kw...)
 psnr = PSNR(x̂)
 @printf "k=%d, PSNR = %.2f\n" hist.k psnr
 
