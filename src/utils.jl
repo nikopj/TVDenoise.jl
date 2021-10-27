@@ -137,6 +137,20 @@ function saltpepper!(x::Array{T,M}, p=0.5) where {T<:Real,M}
 	x[Ωₚ] .= zero(T)
 	return x
 end
-
 saltpepper(x, p) = saltpepper!(copy(x), p)
 
+"""
+    bayer_mask(T::Type, M::Int, N::Int)
+
+Return the RGGB Bayer Color-Filter-Array of type T and size MxN.
+Result is an Array{T,3} where size(w) = (M,N,3).
+"""
+function bayer_mask(T::Type,M::Int,N::Int)
+	w = zeros(T,M,N,3)
+	w[1:2:end, 1:2:end, 1] .= 1 # R
+	w[2:2:end, 1:2:end, 2] .= 1 # G1
+	w[1:2:end, 2:2:end, 2] .= 1 # G2
+	w[2:2:end, 2:2:end, 3] .= 1 # B
+	return w
+end
+bayer_mask(x::AbstractArray) = bayer_mask(eltype(x), size(x)[1:2]...)

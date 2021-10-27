@@ -4,7 +4,7 @@ Implementation of Total Variation denoising via two ADMM based methods: sparse
 matrix direct solves and FFT solves 
 =#
 include("utils.jl")
-export tvd, tvd_fft, tvd_pds, img2tensor, tensor2img, flow, saltpepper!, saltpepper
+export tvd, tvd_fft, tvd_pds, img2tensor, tensor2img, flow, saltpepper!, saltpepper, bayer_mask
 using Printf, LinearAlgebra, FFTW, NNlib
 
 """
