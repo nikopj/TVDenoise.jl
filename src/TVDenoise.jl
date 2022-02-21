@@ -4,7 +4,7 @@ Implementation of Total Variation denoising via two ADMM based methods: sparse
 matrix direct solves and FFT solves 
 =#
 include("utils.jl")
-export tvd, tvd_fft, tvd_pds, img2tensor, tensor2img, flow, saltpepper!, saltpepper, bayer_mask
+export tvd, tvd_fft, tvd_pds, img2tensor, tensor2img, flow, saltpepper!, saltpepper, bayer_mask, tvd_vamp
 using Printf, LinearAlgebra, FFTW, NNlib
 
 """
@@ -237,6 +237,113 @@ function tvd_pds(y::Array{<:Real,3}, λ; ℓ1=false, θ=0, isotropic=false, maxi
 		k += 1;
 		if verbose
 			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k]
+		end
+	end
+	x = permutedims(x, (1,2,4,3));
+	return x[:,:,:], (k=k, obj=F[1:k], res=r[1:k])
+end
+
+"""
+    tvd_vamp(y, args...; kw...)
+
+tvd_vamp with ability to pass in image types (ex. typeof(y) = Matrix{RGB{N0f8},2}).
+"""
+function tvd_vamp(y, args...; kw...)
+	xt, hist = tvd_vamp(img2tensor(y), args...; kw...)
+	return tensor2img(xt), hist
+end
+
+function tvd_vamp(y::Array{<:Real,2}, args...; kw...) 
+	y = reshape(y, size(y)...,1)
+	x, hist = tvd_vamp(y, args...; kw...)
+	return x[:,:], hist
+end
+
+"""
+    tvd_vamp(y::Array{<:Real,N}, λ; γ=0.6, maxit=100, tol=1e-2, verbose=true)
+
+2D anisotropic TV denoising with periodic boundary conditions via VAMP,
+Vector Approximate Message Passing.
+Over-relaxation parameter γ helps with monotonic convergence.
+Accepts 2D, 3D, 4D tensors in (H,W,C,B) form, where the last two
+dimensions are optional.
+"""
+
+function tvd_vamp(y::Array{<:Real,3}, λ; isotropic=false, γ=0.6, maxit=100, tol=1e-2, verbose=true) 
+	M, N, P = size(y)
+	y = reshape(y,size(y)...,1)   # unsqueeze for NNlib conv
+	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
+
+	# precompute C for x-update
+	Λx = rfft([1 -1 zeros(N-2)'; zeros(M-1,N)]);
+	Λy = rfft([[1; -1; zeros(M-2)] zeros(M,N-1)])
+	B = abs2.(Λx) .+ abs2.(Λy)
+	C(ρ) = 1 ./ ( 1 .+ ρ.*B );
+
+	# real Fourier xfrm in image dimension.
+	# Must specify length of first dimension for inverse.
+	Q  = plan_rfft(y,(1,2)); 
+	Qᴴ = plan_irfft(rfft(y),M,(1,2));
+
+	if isotropic
+		objfun = (x,Dx) -> objfun_iso(x,Dx,y,λ)
+		T = BT # block-thresholding
+		divT = (x,τ) -> begin 
+			normx = sqrt.(sum(abs2, x, dims=(3,4)))
+			loc = normx .> τ
+			sum(loc .* ( 1 .- τ*( 1 .- (x./normx).^2)./normx))
+		end
+	else
+		objfun = (x,Dx) -> objfun_aniso(x,Dx,y,λ)
+		T = ST # soft-thresholding
+		divT = (x,τ) -> sum(abs.(x) .> τ)
+	end
+
+	# initialization
+	ρ = 1
+	x = zeros(M,N,1,P);
+	v = zeros(M,N,1,P);
+	Dx= zeros(M,N,2,P);
+	z = zeros(M,N,2,P);
+	u = zeros(M,N,2,P);
+	w = zeros(M,N,2,P);
+	F = zeros(maxit); # store objective fun
+	r = zeros(maxit); # store (relative) primal residual
+
+	# conv kernel
+	W, Wᵀ = fdkernel(eltype(y))
+
+	# (in-place) Circular convolution
+	cdims = DenseConvDims(pad_circular(x, (1,0,1,0)), W);
+	cdimsᵀ= DenseConvDims(pad_circular(z, (0,1,0,1)), Wᵀ);
+	D!(z,x) = conv!(z, pad_circular(x, (1,0,1,0)), W, cdims);
+	Dᵀ!(x,z)= conv!(x, pad_circular(z, (0,1,0,1)), Wᵀ,cdimsᵀ);
+	D(x) = conv(pad_circular(x, (1,0,1,0)), W, cdims);
+	Dᵀ(z)= conv(pad_circular(z, (0,1,0,1)), Wᵀ,cdimsᵀ);
+
+	k = 0;
+	while k == 0 || k < maxit && r[k] > tol
+		x′ = x
+		C′= C(ρ)                               # Fourier factor
+		x = Qᴴ*(C′.*(Q*( y + Dᵀ!(v,u) )));        # x update
+
+		# below: factor of P in numerator and denominator cancel
+		σx= sum(B.*C′) / (M*N)
+		τ = λ*σx / (1 - σx*ρ)
+		Dx= D!(Dx,x);
+
+		w = (Dx - σx*u)./(1-σx*ρ)
+		z = T(w, τ)        # z update
+		σz= τ * divT(w,τ) / (λ*2*M*N*P)
+
+		u = u + γ*(z/σz - Dx/σx)             # dual ascent
+		ρ = ρ + γ*((1/σz) - (1/σx))
+
+		r[k+1] = norm(x - x′)/norm(x);
+		F[k+1] = objfun(x,Dx);
+		k += 1;
+		if verbose
+			@printf "k: %3d | F= %.3e | r= %.3e | ρ= %.3e | σx= %.3e | σz= %.3e \n" k F[k] r[k] ρ σx σz;
 		end
 	end
 	x = permutedims(x, (1,2,4,3));

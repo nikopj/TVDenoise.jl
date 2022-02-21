@@ -5,14 +5,15 @@ Example TV denoising!
 =#
 
 # generate noisy image
-img = testimage("fabio_color_256")
+#img = testimage("fabio_color_256")
+img = load("/home/nikopj/dl/fabio_color_256.png")
 I = img2tensor(img)
 y = I + 0.1*randn(size(I))
 @info size(y)
 
 # TVD parameters
 λ = 0.12; ρ = 2
-kw = Dict(:isotropic=>true, :maxit=>50, :tol=>1e-4, :verbose=>false)
+kw = Dict(:isotropic=>false, :maxit=>500, :tol=>1e-4, :verbose=>false)
 @info kw[:isotropic]
 
 # PSNR for peakvalue of 1
@@ -33,11 +34,16 @@ psnr2 = PSNR(x2)
 psnr3 = PSNR(x3)
 @printf "k=%d, PSNR3 = %.2f\n" hist3.k psnr3
 
+# VAMP TVD
+@time x4, hist4 = tvd_vamp(y, λ; kw...)
+psnr4 = PSNR(x4)
+@printf "k=%d, PSNR4 = %.2f\n" hist4.k psnr4
+
 # showing images side-by-side
-P = plot(axis=nothing, layout=(1,4), size=(1600,400))
-imgv = tensor2img.([y, x1, x2, x3])
-psnrv  = [PSNR(y), psnr1, psnr2, psnr3]
-titlev = ["Noisy", "Sparse", "FFT", "PDS"]
+P = plot(axis=nothing, layout=(1,5), size=(2000,400))
+imgv = tensor2img.([y, x1, x2, x3, x4])
+psnrv  = [PSNR(y), psnr1, psnr2, psnr3, psnr4]
+titlev = ["Noisy", "Sparse", "FFT", "PDS", "VAMP"]
 
 for i=1:length(P)
 	plot!(P[i], imgv[i])

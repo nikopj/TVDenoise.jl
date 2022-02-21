@@ -1,18 +1,19 @@
 using TVDenoise
-using Plots, Printf, TestImages, FileIO
+using Plots, Printf, TestImages, Images, FileIO
 #=
 Example TV denoising (with Salt and Pepper noise)!
 =#
 
 # generate noisy image
-img = testimage("fabio_color_256")
+#img = testimage("fabio_color_256")
+img = load("/home/nikopj/dl/cameraman.jpg")
 x = img2tensor(img)
-y = saltpepper(x, 0.1)
+y = saltpepper(x, 0.2)
 @info size(y)
 
 # TVD parameters
 λ = 1
-kw = Dict(:ℓ1=>true, :θ=>0, :isotropic=>true, :maxit=>500, :tol=>1e-2, :verbose=>true)
+kw = Dict(:ℓ1=>true, :θ=>0, :isotropic=>true, :maxit=>2000, :tol=>1e-3, :verbose=>true)
 @info kw[:isotropic]
 
 # PSNR for peakvalue of 1
@@ -34,7 +35,7 @@ for i=1:length(P)
 	title!(P[i], @sprintf "%s: %.2f dB" titlev[i] psnrv[i])
 end
 
-iso = kw[:isotropic] ? "_iso" : ""
-savefig("saltpepper_fabio$iso.png")
+#iso = kw[:isotropic] ? "_iso" : ""
+#savefig("saltpepper_fabio$iso.png")
 gui() # show plot
 
