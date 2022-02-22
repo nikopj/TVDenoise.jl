@@ -95,16 +95,25 @@ end
 Accepts 2D, 3D, 4D tensors in (H,W,C,B) form, where the last two
 dimensions are optional.
 """
-function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1e-2, verbose=true) 
+function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; h=missing, isotropic=false, maxit=100, tol=1e-2, verbose=true) 
 	M, N, P = size(y)
 	y = reshape(y,size(y)...,1)   # unsqueeze for NNlib conv
 	y = permutedims(y, (1,2,4,3)) # move channels to batch dimension
 	τ = λ/ρ;
 
+	if !ismissing(h)
+		h′ = [h zeros(size(h,1), N-size(h,2)); 
+		      zeros(M-size(h,1), size(h,2)) zeros((M,N) .- size(h))]
+		@show size(h′)
+		Σ = rfft(h′)
+	else
+		Σ = 1
+	end
+
 	# precompute C for x-update
 	Λx = rfft([1 -1 zeros(N-2)'; zeros(M-1,N)]);
 	Λy = rfft([[1; -1; zeros(M-2)] zeros(M,N-1)])
-	C = 1 ./ ( 1 .+ ρ.*(abs2.(Λx) .+ abs2.(Λy)) );
+	C = 1 ./ ( abs2.(Σ) .+ ρ.*(abs2.(Λx) .+ abs2.(Λy)) )
 
 	# real Fourier xfrm in image dimension.
 	# Must specify length of first dimension for inverse.
@@ -135,17 +144,38 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; isotropic=false, maxit=100, tol=1
 	cdimsᵀ= DenseConvDims(pad_circular(z, (0,1,0,1)), Wᵀ);
 	D!(z,x) = conv!(z, pad_circular(x, (1,0,1,0)), W, cdims);
 	Dᵀ!(x,z)= conv!(x, pad_circular(z, (0,1,0,1)), Wᵀ,cdimsᵀ);
+	D(x) = conv(pad_circular(x, (1,0,1,0)), W, cdims);
+	Dᵀ(z)= conv(pad_circular(z, (0,1,0,1)), Wᵀ,cdimsᵀ);
+
+	if !ismissing(h)
+		h = h[:,:,:,:]
+		hᵀ= rot180(h[:,:])[:,:,:,:]
+		padu, padd = ceil(Int,(size(h,1)-1)/2), floor(Int,(size(h,1)-1)/2)
+		padl, padr = ceil(Int,(size(h,2)-1)/2), floor(Int,(size(h,2)-1)/2)
+		pad1 = (padu, padd, padl, padr)
+		pad2 = (padd, padu, padr, padl)
+		# cdims reference being kept, rename variable to cdims2
+		cdims2 = DenseConvDims(pad_circular(x, pad1), h);
+		cdims2ᵀ= DenseConvDims(pad_circular(x, pad2), hᵀ);
+		H = x->conv(pad_circular(x, pad1), h, cdims2);
+		Hᵀ= x->conv(pad_circular(x, pad2), hᵀ,cdims2ᵀ);
+	else
+		H = identity
+		Hᵀ= identity
+	end
+
+	@show Dᵀ!(x,z) |> size
 
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol
-		xᵏ= x
-		x = Qᴴ*(C.*(Q*( y + ρ*Dᵀ!(x,z-u) ))); # x update
-		Dxᵏ = D!(Dxᵏ,x);
+		xᵏ= x 
+		x = Qᴴ*(C.*(Q*( Hᵀ(y) + ρ*Dᵀ(z-u) ))); # x update
+		D!(Dxᵏ,x);
 		zᵏ  = z;
 		z = T(Dxᵏ+u, τ);                      # z update
 		u = u + Dxᵏ - z;                      # dual ascent
 		r[k+1] = norm(x - xᵏ)/norm(x);
-		F[k+1] = objfun(x,Dxᵏ);
+		F[k+1] = objfun(H(x),Dxᵏ);
 		k += 1;
 		if verbose
 			@printf "k: %3d | F= %.3e | r= %.3e \n" k F[k] r[k];

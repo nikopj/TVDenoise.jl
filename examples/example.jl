@@ -6,7 +6,7 @@ Example TV denoising!
 
 # generate noisy image
 #img = testimage("fabio_color_256")
-img = load("/home/nikopj/dl/fabio_color_256.png")
+img = load("cameraman.jpg")
 I = img2tensor(img)
 y = I + 0.1*randn(size(I))
 @info size(y)

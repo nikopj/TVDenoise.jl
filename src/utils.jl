@@ -154,3 +154,14 @@ function bayer_mask(T::Type,M::Int,N::Int)
 	return w
 end
 bayer_mask(x::AbstractArray) = bayer_mask(eltype(x), size(x)[1:2]...)
+
+function gaussiankernel(T::Type, σ::Real, m::Int=ceil(Int,6σ-1))
+	K = zeros(T, m, m, 1, 1)
+	c = (m-1)/2
+	for i=0:m-1, j=0:m-1
+		K[i+1,j+1,1,1] = exp(-((i-c)^2 + (j-c)^2) / (2σ^2))
+	end
+	return K./sum(K)
+end
+gaussiankernel(σ, m=ceil(Int,6σ-1)) = gaussiankernel(Float32, σ, m)
+

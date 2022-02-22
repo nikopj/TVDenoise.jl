@@ -6,7 +6,7 @@ Example TV denoising (with Salt and Pepper noise)!
 
 # generate noisy image
 #img = testimage("fabio_color_256")
-img = load("/home/nikopj/dl/cameraman.jpg")
+img = load("cameraman.jpg")
 x = img2tensor(img)
 y = saltpepper(x, 0.2)
 @info size(y)
