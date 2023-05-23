@@ -3,9 +3,15 @@ module TVDenoise
 Implementation of Total Variation denoising via two ADMM based methods: sparse
 matrix direct solves and FFT solves 
 =#
-include("utils.jl")
-export tvd, tvd_fft, tvd_pds, img2tensor, tensor2img, flow, saltpepper!, saltpepper, bayer_mask, tvd_vamp
 using Printf, LinearAlgebra, FFTW, NNlib
+
+include("utils.jl")
+include("tgv.jl")
+include("mgprox.jl")
+export mg_tvd_pds
+export tvd, tvd_fft, tvd_pds, tvd_vamp, tgv_pds
+export img2tensor, tensor2img, flow
+export saltpepper!, saltpepper, bayer_mask
 
 """
     tvd(y, args...; kw...)
@@ -164,8 +170,6 @@ function tvd_fft(y::Array{<:Real,3}, λ, ρ=1; h=missing, isotropic=false, maxit
 		Hᵀ= identity
 	end
 
-	@show Dᵀ!(x,z) |> size
-
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol
 		xᵏ= x 
@@ -247,21 +251,28 @@ function tvd_pds(y::Array{<:Real,3}, λ; ℓ1=false, θ=0, isotropic=false, maxi
 	# initialization
 	x  = zeros(M,N,1,P);
 	z  = zeros(M,N,2,P);
+	Dx = zeros(M,N,2,P);
 	F = zeros(maxit); # store objective fun
 	r = zeros(maxit); # store primal residual
 
 	# conv kernel
 	W, Wᵀ = fdkernel(eltype(y))
-	D(x) = conv(pad_constant(x, (1,0,1,0), dims=(1,2)), W);
-	Dᵀ(z)= conv(pad_constant(z, (0,1,0,1), dims=(1,2)), Wᵀ);
+	D(x) = conv(pad_circular(x, (1,0,1,0)), W);
+	Dᵀ(z)= conv(pad_circular(z, (0,1,0,1)), Wᵀ);
+
+	# (in-place) Circular convolution
+	cdims = DenseConvDims(pad_circular(x, (1,0,1,0)), W);
+	cdimsᵀ= DenseConvDims(pad_circular(z, (0,1,0,1)), Wᵀ);
+	D!(z,x) = conv!(z, pad_circular(x, (1,0,1,0)), W, cdims);
+	Dᵀ!(x,z)= conv!(x, pad_circular(z, (0,1,0,1)), Wᵀ,cdimsᵀ);
 
 	k = 0;
 	while k == 0 || k < maxit && r[k] > tol 
-		xᵏ= copy(x); 
+		xᵏ= x 
 		x = proxf(x - τ*Dᵀ(z))           # Proximal Gradient Descent on x (primal)
-		x = x + θ*(x-xᵏ);                # Extrapolation (not necessary for smooth data term)
-		Dx = D(x)
-		z = Π(z + σ*Dx)                  # Proximal Gradient Ascent on z (dual)
+		x .= x + θ*(x-xᵏ)                # Extrapolation (not necessary for smooth data term)
+		D!(Dx, x)
+		z .= Π(z + σ*Dx)                  # Proximal Gradient Ascent on z (dual)
 		r[k+1] = norm(x - xᵏ)/norm(x);
 		F[k+1] = objfun(x,Dx);
 		k += 1;
@@ -298,7 +309,6 @@ Over-relaxation parameter γ helps with monotonic convergence.
 Accepts 2D, 3D, 4D tensors in (H,W,C,B) form, where the last two
 dimensions are optional.
 """
-
 function tvd_vamp(y::Array{<:Real,3}, λ; isotropic=false, γ=0.6, maxit=100, tol=1e-2, verbose=true) 
 	M, N, P = size(y)
 	y = reshape(y,size(y)...,1)   # unsqueeze for NNlib conv
@@ -363,7 +373,7 @@ function tvd_vamp(y::Array{<:Real,3}, λ; isotropic=false, γ=0.6, maxit=100, to
 		Dx= D!(Dx,x);
 
 		w = (Dx - σx*u)./(1-σx*ρ)
-		z = T(w, τ)        # z update
+		z = T(w, τ)                          # z update
 		σz= τ * divT(w,τ) / (λ*2*M*N*P)
 
 		u = u + γ*(z/σz - Dx/σx)             # dual ascent
