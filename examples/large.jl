@@ -1,4 +1,5 @@
 using TVDenoise
+using NNlib
 using Plots, Printf, TestImages, FileIO
 #=
 Example TV denoising!
@@ -12,7 +13,7 @@ y = I + 0.4*randn(size(I))
 
 # TVD parameters
 λ = 0.4; ρ = 2
-kw = Dict(:isotropic=>true, :maxit=>20, :tol=>1e-3, :verbose=>true)
+kw = Dict(:isotropic=>true, :maxit=>5, :tol=>1e-3, :verbose=>true)
 @info kw[:isotropic]
 
 # PSNR for peakvalue of 1
@@ -39,10 +40,10 @@ psnr5 = PSNR(x5)
 @printf "k=%d, PSNR5 = %.2f\n" hist5.k psnr5
 
 # MGProx-PDS TVD
-L = log2(minimum(size(y)[1:2])) - 3 |> ceil |> Int
+L = log2(minimum(size(y)[1:2])) - 2 |> ceil |> Int
 @show L
 ỹ = pad_symmetric(y, (2,2,4,4))
-@time x6, hist6 = mg_tvd_pds(ỹ, λ, L; θ=0, α=0.2, n_inner=5, n_coarse=50, kw...)
+@time x6, hist6 = mg_tvd_pds(ỹ, λ, L; θ=0, α=0.1, n_inner=10, n_coarse=500, kw...)
 x6 = x6[3:end-2, 5:end-4, :]
 psnr6 = PSNR(x6)
 @printf "k=%d, PSNR6 = %.2f\n" hist6.k psnr6
